@@ -22,6 +22,7 @@
  */
 static const Monarch* global_handle;
 static bool file_is_open;
+static const MonarchRecord* handle_data_ptr;
 
 /* 
  * a type which defines success or failure of a function.
@@ -38,7 +39,9 @@ typedef enum {
 typedef enum {
   mxm_open_k = 1,
   mxm_close_k = 2,
-  mxm_status_k = 3
+  mxm_status_k = 3,
+  mxm_next_k = 4,
+  mxm_header_k = 5
 } mxm_action_t;
 
 /*
@@ -64,7 +67,6 @@ mxm_success_t populate_open_action(int narg, const mxArray *args[],
   // There should be two more strings - the filename and the access mode.
   for(std::size_t arg = 1; arg < 3; arg++) {
     if(mxGetClassID(args[arg]) == mxCHAR_CLASS) {
-      mexPrintf("parsing arg#%d\n",arg);
       std::size_t slen = mxGetN(args[arg]);
       char work_str[slen];
 
@@ -76,15 +78,12 @@ mxm_success_t populate_open_action(int narg, const mxArray *args[],
       else {
 	// if it's arg 1, this is the filename
 	if(arg == 1) {
-	  mexPrintf("file name is %s\n",work_str);
 	  (to_do->filename).assign(work_str);
 	}
 
 	// otherwise it's access mode
 	if(arg == 2) {
-	  mexPrintf("file mode is %s\n",work_str);
 	  if(strncmp(work_str, "r", slen) == 0) {
-	    mexPrintf("read\n");
 	    to_do->file_mode = sReadMode;
 	  }
 	  else if(strncmp(work_str, "w", slen) == 0) {
@@ -132,6 +131,12 @@ mxm_success_t input_to_do_t(int narg, const mxArray *args[], mxm_do_t *to_do) {
     }
     else if( strncmp(work_str, "hndl_stat", slen + 1) == 0 ) {
       to_do->act = mxm_status_k;
+    }
+    else if( strncmp(work_str, "next_event", slen + 1) == 0 ) {
+      to_do->act = mxm_next_k;
+    }
+    else if( strncmp(work_str, "get_header", slen + 1) == 0 ) {
+      to_do->act = mxm_header_k;
     }
   }
   else {
@@ -193,6 +198,80 @@ mxm_success_t do_mxm_close(int nout, mxArray *out[], const mxm_do_t *todo) {
 }
 
 /*
+ * do_mxm_header gets the file header if the file handle is open and returns the
+ * data as a MATLAB struct.  if no file is open you get no_file_open instead and
+ * a warning message.
+ */
+mxm_success_t do_mxm_header(int nout, mxArray *out[], const mxm_do_t *todo) {
+  // The result, which is mxm_success if the file is open and everything goes 
+  // well in terms of memory allocation.  Otherwise, it is mxm_failure.
+  mxm_success_t result = mxm_success;
+
+  // struct dimensions and such
+  int ndims = 2;
+  int dimary[2] = {1,1};
+
+  // field data for the header
+  int nfields = 5;
+  const char *fields[] = {"filename", 
+			  "acquisition_rate",
+			  "acquisition_mode",
+			  "record_size",
+			  "acquisition_time"};
+
+  if( file_is_open ) {
+    mexPrintf("grabbing header\n");
+    nout = 1;
+    out[0] = mxCreateStructArray(ndims,dimary,nfields,fields);
+    // Now populate the struct data.
+    
+    // First the filename
+    std::string filename = (global_handle->GetHeader())->GetFilename();
+    mxArray *fname = mxCreateString(filename.c_str());
+    mxSetField(out[0],0,"filename",fname);
+
+    // Now grab acquisition rate
+    double acq_rate = (global_handle->GetHeader())->GetAcqRate();
+    mxArray *arate = mxCreateDoubleScalar(acq_rate);
+    mxSetField(out[0],0,"acquisition_rate",arate);
+
+    // Acquisition mode.  here we turn the mode into a string
+    std::string acq_mode;
+    if( global_handle->GetHeader()->GetAcqMode() == sOneChannel ) {
+      acq_mode.assign("OneChannel");
+    }
+    else if( global_handle->GetHeader()->GetAcqMode() == sTwoChannel ) {
+      acq_mode.assign("TwoChannel");
+    }
+    mxArray *amode = mxCreateString(acq_mode.c_str());
+    mxSetField(out[0],0,"acquisition_mode",amode);
+
+    // Record size.  This is an integer number of bytes.  This code is also
+    // BEYOND GOOFY but somehow it works.  Get it together, MathWorks.
+    uint64_T rec_size = global_handle->GetHeader()->GetRecordSize();
+    int dims[2] = {1,1};
+    mxArray *rsize = mxCreateNumericArray(2,dims,mxUINT64_CLASS,mxREAL);
+    *((uint64_T*)mxGetData(rsize)) = rec_size;
+    mxSetField(out[0],0,"record_size",rsize);
+
+    // Acquisition time.  
+    uint64_T acq_time = global_handle->GetHeader()->GetAcqTime();
+    mxArray *atime = mxCreateNumericArray(2,dims,mxUINT64_CLASS,mxREAL);
+    *((uint64_T*)mxGetData(atime)) = acq_time;
+    mxSetField(out[0],0,"acquisition_time",atime);
+  }
+  else {
+    mexPrintf("error: no file open!\n");
+    nout = 1;
+    out[0] = mxCreateString("no_file_open");
+    result = mxm_failure;
+  }
+
+  // All done
+  return result;
+}
+
+/*
  * do_mxm_status returns the present file handle status.
  */
 mxm_success_t do_mxm_status(int nout, mxArray *out[], const mxm_do_t *todo) {
@@ -204,6 +283,47 @@ mxm_success_t do_mxm_status(int nout, mxArray *out[], const mxm_do_t *todo) {
   nout = 1;
   if( (out[0] = mxCreateLogicalScalar(file_is_open)) == NULL ) {
     mexPrintf("error in do_mxm_status: couldn't allocate memory!\n");
+    result = mxm_failure;
+  }
+
+  // All done, no matter what.
+  return mxm_success;
+}
+
+/*
+ * do_mxm_next grabs the next event and returns it as a struct.  If no file is open,
+ * instead you get a string 'no_open_file' and a warning message.  If the struct could
+ * be created and returned, mxm_success.  Otherwise, mxm_failure.
+ */
+mxm_success_t do_mxm_next(int nout, mxArray *out[], const mxm_do_t *todo) {
+  // Result
+  mxm_success_t result = mxm_success;
+
+  // The field names
+  int ardims[2] = {1,1};
+  int nfields = 4;
+  const char *fields[] = {"acquisition_id",
+			  "record_id",
+			  "timestamp",
+			  "data"};
+
+  if(file_is_open) {
+    nout = 1;
+    if( global_handle->ReadRecord() == true ) {
+      out[0] = mxCreateStructArray(2,ardims,nfields,fields);
+      //FIXME need to populate fields.
+    }
+    // Otherwise we are EOF
+    else {
+      out[0] = mxCreateString("eof");
+    }
+  }
+
+  // handle isn't open
+  else {
+    mexPrintf("error: no handle open to get next event from.  did you mxm_open?\n");
+    nout = 1;
+    out[0] = mxCreateString("no_open_file");
     result = mxm_failure;
   }
 
@@ -223,6 +343,8 @@ mxm_success_t dispatch(int nout, mxArray *out[], const mxm_do_t *todo) {
   if(todo->act == mxm_open_k) do_mxm_open(nout, out, todo);
   else if(todo->act == mxm_close_k) do_mxm_close(nout, out, todo);
   else if(todo->act == mxm_status_k) do_mxm_status(nout, out, todo);
+  else if(todo->act == mxm_next_k) do_mxm_next(nout, out, todo);
+  else if(todo->act == mxm_header_k) do_mxm_header(nout, out, todo);
 
   // all done
   return result;
