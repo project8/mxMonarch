@@ -38,7 +38,7 @@ typedef enum {
 typedef enum {
   mxm_open_k = 1,
   mxm_close_k = 2,
-  mxm_handle_status = 3
+  mxm_status_k = 3
 } mxm_action_t;
 
 /*
@@ -131,7 +131,7 @@ mxm_success_t input_to_do_t(int narg, const mxArray *args[], mxm_do_t *to_do) {
       to_do->act = mxm_close_k;
     }
     else if( strncmp(work_str, "hndl_stat", slen + 1) == 0 ) {
-      to_do->act = mxm_handle_status;
+      to_do->act = mxm_status_k;
     }
   }
   else {
@@ -192,6 +192,25 @@ mxm_success_t do_mxm_close(int nout, mxArray *out[], const mxm_do_t *todo) {
   return mxm_success;
 }
 
+/*
+ * do_mxm_status returns the present file handle status.
+ */
+mxm_success_t do_mxm_status(int nout, mxArray *out[], const mxm_do_t *todo) {
+  // The result of the operation.  This is true if the memory could be allocated
+  // and everything worked out OK.  Otherwise it returns mxm_failure.
+  mxm_success_t result = mxm_success;
+  
+  // We return only one value.
+  nout = 1;
+  if( (out[0] = mxCreateLogicalScalar(file_is_open)) == NULL ) {
+    mexPrintf("error in do_mxm_status: couldn't allocate memory!\n");
+    result = mxm_failure;
+  }
+
+  // All done, no matter what.
+  return mxm_success;
+}
+
 
 /*
  * dispatch takes the parsed mxm_do_t structure and performs the task which
@@ -203,6 +222,7 @@ mxm_success_t dispatch(int nout, mxArray *out[], const mxm_do_t *todo) {
   // Check what we're supposed to do.
   if(todo->act == mxm_open_k) do_mxm_open(nout, out, todo);
   else if(todo->act == mxm_close_k) do_mxm_close(nout, out, todo);
+  else if(todo->act == mxm_status_k) do_mxm_status(nout, out, todo);
 
   // all done
   return result;
