@@ -22,7 +22,7 @@
  */
 static const Monarch* global_handle;
 static bool file_is_open;
-static const MonarchRecord* handle_data_ptr;
+static const MonarchRecord* handle_data_ptr[2];
 
 /* 
  * a type which defines success or failure of a function.
@@ -310,8 +310,70 @@ mxm_success_t do_mxm_next(int nout, mxArray *out[], const mxm_do_t *todo) {
   if(file_is_open) {
     nout = 1;
     if( global_handle->ReadRecord() == true ) {
+
+      // Create output struct. 
       out[0] = mxCreateStructArray(2,ardims,nfields,fields);
-      //FIXME need to populate fields.
+
+      // OK LETS DO IT GO GO GO
+      
+      // start with acquisition ID.
+      uint64_T acq_id = global_handle->GetRecordOne()->fAId;
+      mxArray *aid = mxCreateNumericArray(2,ardims,mxUINT64_CLASS,mxREAL);
+      *((uint64_T*)mxGetData(aid)) = acq_id;
+      mxSetField(out[0],0,"acquisition_id",aid);
+
+      // now record ID
+      uint64_T rec_id = global_handle->GetRecordOne()->fRId;
+      mxArray *rid = mxCreateNumericArray(2,ardims,mxUINT64_CLASS,mxREAL);
+      *((uint64_T*)mxGetData(rid)) = rec_id;
+      mxSetField(out[0],0,"record_id",rid);
+
+      // timestamp
+      uint64_T ts = global_handle->GetRecordOne()->fTick;
+      mxArray *tstamp = mxCreateNumericArray(2,ardims,mxUINT64_CLASS,mxREAL);
+      *((uint64_T*)mxGetData(tstamp)) = ts;
+      mxSetField(out[0],0,"timestamp",tstamp);
+
+      // grab the data... this is the slightly complicated part.  first we need
+      // to know how long it is.  also the API is totally bizarre but OK, whatever.
+      // basically we figure out how many elements there are - nch*rec_size.  then
+      // we dynamically allocate some memory using MATLAB's malloc, and we set all
+      // of the values.  we then hand that pointer over to a numeric matrix and inform
+      // it what its dimensions are.  makes perfect sense, right?
+      int nch;
+      if(global_handle->GetHeader()->GetAcqMode() == sOneChannel) {
+	nch = 1;
+	handle_data_ptr[0] = global_handle->GetRecordOne();
+      }
+      else if(global_handle->GetHeader()->GetAcqMode() == sTwoChannel) {
+	nch = 2;
+	handle_data_ptr[0] = global_handle->GetRecordOne();
+	handle_data_ptr[1] = global_handle->GetRecordTwo();
+      }
+      int rec_size = global_handle->GetHeader()->GetRecordSize();
+
+      // ok, make our data array and the matrix which will eventually hold it.
+      uint8_T *dt = (uint8_T*)mxCalloc(nch*rec_size,sizeof(uint8_T));
+      mxArray *dt_mat = mxCreateNumericMatrix(0,0,mxUINT8_CLASS,mxREAL);
+
+      // Fill first channel data.
+      for(int idx = 0; idx < nch*rec_size; idx++) {
+	dt[idx] = handle_data_ptr[0]->fDataPtr[idx];
+      }
+      // Now if necessary, fill 2nd channel data.
+      if(nch == 2) {
+	for(int idx = rec_size; idx < 2*rec_size; idx++) {
+	  dt[idx] = handle_data_ptr[1]->fDataPtr[idx];
+	}
+      }
+
+      // OK now move data and inform the matrix.
+      mxSetData(dt_mat, dt);
+      mxSetM(dt_mat,nch);
+      mxSetN(dt_mat,rec_size);
+
+      mxSetField(out[0],0,"data",dt_mat);
+      
     }
     // Otherwise we are EOF
     else {
