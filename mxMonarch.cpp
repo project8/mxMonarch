@@ -183,6 +183,14 @@ mxm_success_t do_mxm_open(int nout, mxArray *out[], const mxm_do_t *todo) {
  * do_mxm_close closes the open file handle, if it is indeed open.  otherwise
  * it is a harmless no-op.
  */
+mxm_success_t do_mxm_close(int nout, mxArray *out[], const mxm_do_t *todo) {
+  if(file_is_open && global_handle->Close() ) {
+    file_is_open = false;
+  }
+
+  // All done, no matter what.
+  return mxm_success;
+}
 
 
 /*
