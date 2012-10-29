@@ -60,7 +60,6 @@ typedef struct {
  */
 mxm_success_t populate_open_action(int narg, const mxArray *args[], 
 				   mxm_do_t *to_do) {
-  mexPrintf("populating action for opening.\n");
   mxm_success_t result = mxm_success;
   to_do->act = mxm_open_k;
  
@@ -108,7 +107,6 @@ mxm_success_t populate_open_action(int narg, const mxArray *args[],
  * is the internal format which is used for dispatching.
  */
 mxm_success_t input_to_do_t(int narg, const mxArray *args[], mxm_do_t *to_do) {
-  mexPrintf("parsing input arguments.\n");
   mxm_success_t result = mxm_success;
 
   if(mxGetClassID(args[0]) == mxCHAR_CLASS) {
@@ -171,7 +169,6 @@ mxm_success_t do_mxm_open(int nout, mxArray *out[], const mxm_do_t *todo) {
       }
       else if(global_handle->ReadHeader()) {
 	file_is_open = true;
-	mexPrintf("file is open.\n");
       }
       else {
 	mexPrintf("error: opening file failed.\n");
@@ -356,23 +353,30 @@ mxm_success_t do_mxm_next(int nout, mxArray *out[], const mxm_do_t *todo) {
       uint8_T *dt = (uint8_T*)mxCalloc(nch*rec_size,sizeof(uint8_T));
       mxArray *dt_mat = mxCreateNumericMatrix(0,0,mxUINT8_CLASS,mxREAL);
 
-      // Fill first channel data.
-      for(int idx = 0; idx < nch*rec_size; idx++) {
-	dt[idx] = handle_data_ptr[0]->fDataPtr[idx];
+      if( dt == NULL ) {
+	mexPrintf("error: could not allocate memory for data!\n");
+	result = mxm_failure;
       }
-      // Now if necessary, fill 2nd channel data.
-      if(nch == 2) {
-	for(int idx = rec_size; idx < 2*rec_size; idx++) {
-	  dt[idx] = handle_data_ptr[1]->fDataPtr[idx];
+      else {
+	// Fill first channel data.
+	for(int idx = 0; idx < rec_size; idx++) {
+	  dt[idx] = handle_data_ptr[0]->fDataPtr[idx];
 	}
+	// Now if necessary, fill 2nd channel data.
+	if(nch == 2) {
+	  for(int idx = 0; idx < rec_size; idx++) {
+	    dt[(rec_size - 1) + idx] = handle_data_ptr[1]->fDataPtr[idx];
+	  }
+	}
+
+	// OK now move data and inform the matrix.
+	mxSetData(dt_mat, dt);
+	mxSetM(dt_mat,nch);
+	mxSetN(dt_mat,rec_size);
+	
+	// set the result.
+	mxSetField(out[0],0,"data",dt_mat);
       }
-
-      // OK now move data and inform the matrix.
-      mxSetData(dt_mat, dt);
-      mxSetM(dt_mat,nch);
-      mxSetN(dt_mat,rec_size);
-
-      mxSetField(out[0],0,"data",dt_mat);
       
     }
     // Otherwise we are EOF
