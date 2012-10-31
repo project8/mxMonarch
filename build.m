@@ -1,5 +1,7 @@
-function [] = build() 
+function [] = build(monarch_dir) 
   % This path is hardcoded right now which is dumb, but 
   % it'll work for now.
-  mex('mxMonarch.cpp','-I../../CPP/monarch/Include/','-L../../CPP/monarch/Install/lib','-lMonarchCore')
+  incdir = strcat('-I',monarch_dir,'/Include');
+  libdir = strcat('-L',monarch_dir,'/Install/lib');
+  mex('mxMonarch.cpp',incdir,libdir,'-lMonarchCore')
 end
