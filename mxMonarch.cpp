@@ -20,8 +20,9 @@
  * A static file handle pointer and a bool to indicate an existing, open
  * file handle.
  */
-static const Monarch* global_handle;
-static bool file_is_open;
+static const Monarch* global_handle_r;
+static Monarch* global_handle_w;
+static bool file_is_open_r, file_is_open_w;
 static const MonarchRecord* handle_data_ptr[2];
 
 /* 
@@ -41,7 +42,8 @@ typedef enum {
   mxm_close_k = 2,
   mxm_status_k = 3,
   mxm_next_k = 4,
-  mxm_header_k = 5
+  mxm_header_k = 5,
+  mxm_write_k = 6
 } mxm_action_t;
 
 /*
@@ -136,12 +138,51 @@ mxm_success_t input_to_do_t(int narg, const mxArray *args[], mxm_do_t *to_do) {
     else if( strncmp(work_str, "get_header", slen + 1) == 0 ) {
       to_do->act = mxm_header_k;
     }
+    else if( strncmp(work_str, "write", slen + 1) == 0 ) {
+      to_do->act = mxm_write_k;
+    }
   }
   else {
     mexPrintf("error: mxMonarch only speaks strings.\n");
     result = mxm_failure;
   }
 
+  return result;
+}
+
+/*
+ * mxm_prep_header_from_args takes a todo structure and writes an appropriate header
+ * on the global file handle.  currently it just sets everything to the following
+ * defaults:
+ * record size 4194304
+ * two channels
+ * acquisition time zero!
+ * 250MHz digitization rate
+ */
+mxm_success_t mxm_prep_header_from_args(const mxm_do_t *todo) {
+  // result
+  mxm_success_t result = mxm_success;
+
+  // try to grab the header that we want to write on
+  MonarchHeader *work_ptr = NULL;
+  if( (work_ptr = global_handle_w->GetHeader()) != NULL ) {
+    work_ptr->SetFilename(todo->filename);
+    work_ptr->SetAcqRate(250.0);
+    work_ptr->SetAcqMode(sTwoChannel);
+    work_ptr->SetAcqTime(0);
+    work_ptr->SetRecordSize(4194304);
+    if( global_handle_w->WriteHeader() == false ) {
+      mexPrintf("error: couldn't write header to disk!\n");
+      result = mxm_failure;
+    };
+  }
+  // otherwise something bad happened
+  else {
+    mexPrintf("error: couldn't get header for writing!\n");
+    result = mxm_failure;
+  }
+
+  // all done
   return result;
 }
 
@@ -156,19 +197,32 @@ mxm_success_t input_to_do_t(int narg, const mxArray *args[], mxm_do_t *to_do) {
 mxm_success_t do_mxm_open(int nout, mxArray *out[], const mxm_do_t *todo) {
   mxm_success_t result;
   // First check the static is_open value
-  if(file_is_open) {
+  if(file_is_open_r || file_is_open_w) {
     mexPrintf("error: file is already open!\n");
     result = mxm_failure;
   }
   // If file_is_open is false, proceed.
   else {
     if(todo->file_mode == sReadMode) {
-      global_handle = Monarch::OpenForReading(todo->filename);
-      if(global_handle == NULL) {
+      global_handle_r = Monarch::OpenForReading(todo->filename);
+      if(global_handle_r == NULL) {
 	mexPrintf("error: couldn't open file for reading!\n");
       }
-      else if(global_handle->ReadHeader()) {
-	file_is_open = true;
+      else if(global_handle_r->ReadHeader()) {
+	file_is_open_r = true;
+      }
+      else {
+	mexPrintf("error: opening file failed.\n");
+	result = mxm_failure;
+      }
+    }
+    else if(todo->file_mode == sWriteMode) {
+      global_handle_w = Monarch::OpenForWriting(todo->filename);
+      if(global_handle_w == NULL) {
+	mexPrintf("error: couldn't open file for writing!\n");
+      }
+      else if( mxm_prep_header_from_args(todo) == mxm_success ) {
+	file_is_open_w = true;
       }
       else {
 	mexPrintf("error: opening file failed.\n");
@@ -186,8 +240,12 @@ mxm_success_t do_mxm_open(int nout, mxArray *out[], const mxm_do_t *todo) {
  * it is a harmless no-op.
  */
 mxm_success_t do_mxm_close(int nout, mxArray *out[], const mxm_do_t *todo) {
-  if(file_is_open && global_handle->Close() ) {
-    file_is_open = false;
+  if(file_is_open_r && global_handle_r->Close() ) {
+    file_is_open_r = false;
+  }
+
+  if(file_is_open_w && global_handle_w->Close() ) {
+    file_is_open_w = false;
   }
 
   // All done, no matter what.
@@ -216,28 +274,28 @@ mxm_success_t do_mxm_header(int nout, mxArray *out[], const mxm_do_t *todo) {
 			  "record_size",
 			  "acquisition_time"};
 
-  if( file_is_open ) {
+  if( file_is_open_r ) {
     mexPrintf("grabbing header\n");
     nout = 1;
     out[0] = mxCreateStructArray(ndims,dimary,nfields,fields);
     // Now populate the struct data.
     
     // First the filename
-    std::string filename = (global_handle->GetHeader())->GetFilename();
+    std::string filename = (global_handle_r->GetHeader())->GetFilename();
     mxArray *fname = mxCreateString(filename.c_str());
     mxSetField(out[0],0,"filename",fname);
 
     // Now grab acquisition rate
-    double acq_rate = (global_handle->GetHeader())->GetAcqRate();
+    double acq_rate = (global_handle_r->GetHeader())->GetAcqRate();
     mxArray *arate = mxCreateDoubleScalar(acq_rate);
     mxSetField(out[0],0,"acquisition_rate",arate);
 
     // Acquisition mode.  here we turn the mode into a string
     std::string acq_mode;
-    if( global_handle->GetHeader()->GetAcqMode() == sOneChannel ) {
+    if( global_handle_r->GetHeader()->GetAcqMode() == sOneChannel ) {
       acq_mode.assign("OneChannel");
     }
-    else if( global_handle->GetHeader()->GetAcqMode() == sTwoChannel ) {
+    else if( global_handle_r->GetHeader()->GetAcqMode() == sTwoChannel ) {
       acq_mode.assign("TwoChannel");
     }
     mxArray *amode = mxCreateString(acq_mode.c_str());
@@ -245,20 +303,20 @@ mxm_success_t do_mxm_header(int nout, mxArray *out[], const mxm_do_t *todo) {
 
     // Record size.  This is an integer number of bytes.  This code is also
     // BEYOND GOOFY but somehow it works.  Get it together, MathWorks.
-    uint64_T rec_size = global_handle->GetHeader()->GetRecordSize();
+    uint64_T rec_size = global_handle_r->GetHeader()->GetRecordSize();
     int dims[2] = {1,1};
     mxArray *rsize = mxCreateNumericArray(2,dims,mxUINT64_CLASS,mxREAL);
     *((uint64_T*)mxGetData(rsize)) = rec_size;
     mxSetField(out[0],0,"record_size",rsize);
 
     // Acquisition time.  
-    uint64_T acq_time = global_handle->GetHeader()->GetAcqTime();
+    uint64_T acq_time = global_handle_r->GetHeader()->GetAcqTime();
     mxArray *atime = mxCreateNumericArray(2,dims,mxUINT64_CLASS,mxREAL);
     *((uint64_T*)mxGetData(atime)) = acq_time;
     mxSetField(out[0],0,"acquisition_time",atime);
   }
   else {
-    mexPrintf("error: no file open!\n");
+    mexPrintf("error: no file open for read mode!\n");
     nout = 1;
     out[0] = mxCreateString("no_file_open");
     result = mxm_failure;
@@ -278,13 +336,79 @@ mxm_success_t do_mxm_status(int nout, mxArray *out[], const mxm_do_t *todo) {
   
   // We return only one value.
   nout = 1;
-  if( (out[0] = mxCreateLogicalScalar(file_is_open)) == NULL ) {
+  if( (out[0] = mxCreateLogicalScalar(file_is_open_r || file_is_open_w)) == NULL ) {
     mexPrintf("error in do_mxm_status: couldn't allocate memory!\n");
     result = mxm_failure;
   }
 
   // All done, no matter what.
   return mxm_success;
+}
+
+/*
+ * do_mxm_write writes raw data to an open monarch file.  for this call to succeed, 
+ * a file handle must be open for writing (of course) and the data must be of the right
+ * shape.
+ */
+mxm_success_t do_mxm_write(int nout, mxArray *out[], 
+			   int nin,  const mxArray *in[],
+			   const mxm_do_t *todo) {
+  // the result.  this is a success if the file can be opened and the data can be written.
+  mxm_success_t result = mxm_success;
+
+  // check that an open file handle for writing exists
+  if(file_is_open_w) {
+    // OK, now we just need to grab the data (which is an nch x recordsize array) and write
+    // it to disk.  The data is a huge array at in[1].  Also because all Writable files
+    // are created with default settings we will blithely make sure they have the "right" 
+    // shape and just go nuts.
+    // FIXME: We will totally neglect record number, etc for right now.
+    if( mxGetClassID(in[1]) == mxUINT8_CLASS && 
+	mxGetM(in[1]) == 2 && 
+	mxGetN(in[1]) == 4194304 ) {
+      // get a pointer to the data, which is flat.
+      uint8_T *in_ptr = (uint8_T*)mxGetData(in[1]);
+      if(in_ptr == NULL) {
+	mexPrintf("error: couldn't get pointer to data!\n");
+      }
+      else { //proceed
+	MonarchRecord *out_ptr = global_handle_w->GetRecordOne();
+	for(int i = 0; i < 4194304; i++) {
+	  out_ptr->fDataPtr[i] = in_ptr[i];
+	}
+	out_ptr = global_handle_w->GetRecordTwo();
+	for(int i = 0; i < 4194304; i++) {
+	  out_ptr->fDataPtr[i] = in_ptr[i];
+	}
+	// now write the record.
+	if( global_handle_w->WriteRecord() == true ) {
+	  nout = 1;
+	  out[0] = mxCreateString("ok");
+	}
+	else {
+	  mexPrintf("couldn't write data to disk!\n");
+	  nout = 1;
+	  out[0] = mxCreateString("file_write_error");
+	  result = mxm_failure;
+	}
+
+	// Set the 
+      }
+    }
+    else {
+      mexPrintf("data must be of 8 bit type and of correct shape.\n");
+      nout = 1;
+      out[0] = mxCreateString("data_type_error");
+      result = mxm_failure;
+    }
+  }
+  else {
+    mexPrintf("error: no file is open for writing!\n");
+    result = mxm_failure;
+  }
+
+  // all done
+  return result;
 }
 
 /*
@@ -304,9 +428,9 @@ mxm_success_t do_mxm_next(int nout, mxArray *out[], const mxm_do_t *todo) {
 			  "timestamp",
 			  "data"};
 
-  if(file_is_open) {
+  if(file_is_open_r) {
     nout = 1;
-    if( global_handle->ReadRecord() == true ) {
+    if( global_handle_r->ReadRecord() == true ) {
 
       // Create output struct. 
       out[0] = mxCreateStructArray(2,ardims,nfields,fields);
@@ -314,19 +438,19 @@ mxm_success_t do_mxm_next(int nout, mxArray *out[], const mxm_do_t *todo) {
       // OK LETS DO IT GO GO GO
       
       // start with acquisition ID.
-      uint64_T acq_id = global_handle->GetRecordOne()->fAId;
+      uint64_T acq_id = global_handle_r->GetRecordOne()->fAId;
       mxArray *aid = mxCreateNumericArray(2,ardims,mxUINT64_CLASS,mxREAL);
       *((uint64_T*)mxGetData(aid)) = acq_id;
       mxSetField(out[0],0,"acquisition_id",aid);
 
       // now record ID
-      uint64_T rec_id = global_handle->GetRecordOne()->fRId;
+      uint64_T rec_id = global_handle_r->GetRecordOne()->fRId;
       mxArray *rid = mxCreateNumericArray(2,ardims,mxUINT64_CLASS,mxREAL);
       *((uint64_T*)mxGetData(rid)) = rec_id;
       mxSetField(out[0],0,"record_id",rid);
 
       // timestamp
-      uint64_T ts = global_handle->GetRecordOne()->fTick;
+      uint64_T ts = global_handle_r->GetRecordOne()->fTick;
       mxArray *tstamp = mxCreateNumericArray(2,ardims,mxUINT64_CLASS,mxREAL);
       *((uint64_T*)mxGetData(tstamp)) = ts;
       mxSetField(out[0],0,"timestamp",tstamp);
@@ -338,16 +462,16 @@ mxm_success_t do_mxm_next(int nout, mxArray *out[], const mxm_do_t *todo) {
       // of the values.  we then hand that pointer over to a numeric matrix and inform
       // it what its dimensions are.  makes perfect sense, right?
       int nch;
-      if(global_handle->GetHeader()->GetAcqMode() == sOneChannel) {
+      if(global_handle_r->GetHeader()->GetAcqMode() == sOneChannel) {
 	nch = 1;
-	handle_data_ptr[0] = global_handle->GetRecordOne();
+	handle_data_ptr[0] = global_handle_r->GetRecordOne();
       }
-      else if(global_handle->GetHeader()->GetAcqMode() == sTwoChannel) {
+      else if(global_handle_r->GetHeader()->GetAcqMode() == sTwoChannel) {
 	nch = 2;
-	handle_data_ptr[0] = global_handle->GetRecordOne();
-	handle_data_ptr[1] = global_handle->GetRecordTwo();
+	handle_data_ptr[0] = global_handle_r->GetRecordOne();
+	handle_data_ptr[1] = global_handle_r->GetRecordTwo();
       }
-      int rec_size = global_handle->GetHeader()->GetRecordSize();
+      int rec_size = global_handle_r->GetHeader()->GetRecordSize();
 
       // ok, make our data array and the matrix which will eventually hold it.
       uint8_T *dt = (uint8_T*)mxCalloc(nch*rec_size,sizeof(uint8_T));
@@ -397,12 +521,13 @@ mxm_success_t do_mxm_next(int nout, mxArray *out[], const mxm_do_t *todo) {
   return mxm_success;
 }
 
-
 /*
  * dispatch takes the parsed mxm_do_t structure and performs the task which
  * has been specified by the user (or fails).
  */
-mxm_success_t dispatch(int nout, mxArray *out[], const mxm_do_t *todo) {
+mxm_success_t dispatch(int nout, mxArray *out[], 
+		       int nin,  const mxArray *in[],
+		       const mxm_do_t *todo) {
   mxm_success_t result = mxm_success;
 
   // Check what we're supposed to do.
@@ -411,6 +536,7 @@ mxm_success_t dispatch(int nout, mxArray *out[], const mxm_do_t *todo) {
   else if(todo->act == mxm_status_k) do_mxm_status(nout, out, todo);
   else if(todo->act == mxm_next_k) do_mxm_next(nout, out, todo);
   else if(todo->act == mxm_header_k) do_mxm_header(nout, out, todo);
+  else if(todo->act == mxm_write_k) do_mxm_write(nout, out, nin, in, todo);
 
   // all done
   return result;
@@ -437,7 +563,7 @@ void mexFunction(int nargout, mxArray *argout[],
   // methods which accomplish the desired result.
   else {
     if(input_to_do_t(nargin,argin,&todo) == mxm_success) {
-      dispatch(nargout, argout, &todo);
+      dispatch(nargout, argout, nargin, argin, &todo);
     }
   }
 
