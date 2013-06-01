@@ -374,13 +374,10 @@ mxm_success_t do_mxm_write(int nout, mxArray *out[],
 	mexPrintf("error: couldn't get pointer to data!\n");
       }
       else { //proceed
-	const MonarchRecord *out_ptr1 = global_handle_w->GetRecordOne();
+	MonarchRecord *out_ptr = global_handle_w->GetRecordInterleaved();
 	for(int i = 0; i < 4194304; i++) {
-	  out_ptr1->fDataPtr[i] = in_ptr[i];
-	}
-	const MonarchRecord *out_ptr2 = global_handle_w->GetRecordTwo();
-	for(int i = 0; i < 4194304; i++) {
-	  out_ptr2->fDataPtr[i] = in_ptr[i];
+	  out_ptr->fDataPtr[2*i] = in_ptr[i];
+	  out_ptr->fDataPtr[2*i+1] = in_ptr[i];
 	}
 	// now write the record.
 	if( global_handle_w->WriteRecord() == true ) {
